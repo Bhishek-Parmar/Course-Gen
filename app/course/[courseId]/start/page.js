@@ -10,6 +10,12 @@ import { GenerateChapterContent_AI } from '@/configs/AiModel'
 import service from '@/configs/service'
 import GenerationStatus from './_components/GenerationStatus'
 import { LoadingState } from './_components/LoadingState'
+import { AnimatedButton } from '@/components/AnimatedButton'
+import { Button } from '@/components/ui/button'
+
+import { useRouter } from 'next/navigation';
+
+import { HiArrowLeft } from 'react-icons/hi2';
 
 // Define content template first since it's used by other functions
 const contentTemplate = {
@@ -85,6 +91,8 @@ const contentTemplate = {
 };
 
 function CourseStart() {
+
+    const router = useRouter();
     // State declarations
     const params = useParams();
     const [course, setCourse] = useState(null);
@@ -171,52 +179,81 @@ function CourseStart() {
             }
         };
     
+        const getDailymotionVideos = async (query) => {
+            try {
+                const response = await fetch(`https://api.dailymotion.com/videos?search=${encodeURIComponent(query)}&limit=5`);
+                if (!response.ok) {
+                    throw new Error(`Dailymotion API error: ${response.status}`);
+                }
+                const data = await response.json();
+                if (!data.list?.length) {
+                    return getEmptyVideoStructure();
+                }
+                const videos = data.list.map(video => ({
+                    videoId: video.id,
+                    title: video.title,
+                    description: video.description,
+                    thumbnail: video.thumbnail_url
+                }));
+                return {
+                    recommendedVideos: videos.slice(0, 3).map(v => v.videoId),
+                    alternativeVideos: videos.slice(3, 6).map(v => v.videoId),
+                    expertTalks: []
+                };
+            } catch (error) {
+                console.error("Error fetching Dailymotion videos:", error);
+                return getEmptyVideoStructure();
+            }
+        };
+        
         const getRelevantVideos = async (chapter, course, content) => {
             try {
                 const API_KEY = process.env.YOUTUBE_API_KEY;
                 if (!API_KEY) {
-                    console.log("YouTube API key not configured");
-                    return getEmptyVideoStructure();
+                    console.log("YouTube API key not configured, trying Dailymotion...");
+                    return await getDailymotionVideos(`${chapter.name} ${course.name} tutorial`);
                 }
-    
+        
                 setGenerationStep('video');
                 const searchQuery = `${chapter.name} ${course.name} tutorial`;
-                
+        
                 try {
                     const response = await fetch(
                         `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchQuery)}&maxResults=10&type=video&key=${API_KEY}`
                     );
-    
+        
                     if (!response.ok) {
-                        throw new Error(`YouTube API error: ${response.status}`);
+                        console.warn("YouTube API error:", response.status, "Falling back to Dailymotion...");
+                        return await getDailymotionVideos(searchQuery);
                     }
-    
+        
                     const data = await response.json();
                     if (!data.items?.length) {
-                        return getEmptyVideoStructure();
+                        console.warn("No YouTube videos found, trying Dailymotion...");
+                        return await getDailymotionVideos(searchQuery);
                     }
-    
+        
                     const videos = data.items.map(item => ({
                         videoId: item.id.videoId,
                         title: item.snippet.title,
                         description: item.snippet.description
                     }));
-    
+        
                     return {
                         recommendedVideos: videos.slice(0, 3).map(v => v.videoId),
                         alternativeVideos: videos.slice(3, 6).map(v => v.videoId),
                         expertTalks: videos.slice(6, 8).map(v => v.videoId)
                     };
-    
                 } catch (error) {
-                    console.error("Error fetching videos:", error);
-                    return getEmptyVideoStructure();
+                    console.error("Error fetching YouTube videos, trying Dailymotion...", error);
+                    return await getDailymotionVideos(searchQuery);
                 }
             } catch (error) {
                 console.error("Error in video processing:", error);
                 return getEmptyVideoStructure();
             }
         };
+        
     
         const getEmptyVideoStructure = () => ({
             recommendedVideos: [],
@@ -483,172 +520,450 @@ function CourseStart() {
             setGenerationStep(null);
         }
     };
+
+
+    //dev tool -- videos 
+    // Add these state variables
+const [videoUrls, setVideoUrls] = useState({
+    recommended: ['', '', ''],
+    alternative: ['', '', ''],
+    expert: ['', '']
+});
+
+// Add these utility functions
+const extractVideoId = (url) => {
+    try {
+        const urlObj = new URL(url);
+        if (urlObj.hostname.includes('youtube.com')) {
+            return urlObj.searchParams.get('v');
+        } else if (urlObj.hostname.includes('youtu.be')) {
+            return urlObj.pathname.slice(1);
+        }
+        return null;
+    } catch (error) {
+        console.error('Invalid URL:', error);
+        return null;
+    }
+};
+
+const handleVideoUrlChange = (type, index, value) => {
+    setVideoUrls(prev => ({
+        ...prev,
+        [type]: [
+            ...prev[type].slice(0, index),
+            value,
+            ...prev[type].slice(index + 1)
+        ]
+    }));
+};
+
+const updateVideo = async (type, index) => {
+    if (!selectedChapter) return;
+
+    const url = videoUrls[type][index];
+    const videoId = extractVideoId(url);
+
+    if (!videoId) {
+        alert('Invalid YouTube URL');
+        return;
+    }
+
+    try {
+        // Get current content
+        const result = await db.select().from(Chapters)
+            .where(and(
+                eq(Chapters.chapterId, selectedChapter.chapterId),
+                eq(Chapters.courseId, params.courseId)
+            ));
+
+        if (result?.[0]) {
+            const content = typeof result[0].content === 'string' 
+                ? JSON.parse(result[0].content) 
+                : result[0].content;
+
+            // Update the specific video
+            if (type === 'recommended') {
+                content.resources.recommendedVideos[index] = videoId;
+            } else if (type === 'alternative') {
+                content.resources.alternativeVideos[index] = videoId;
+            } else if (type === 'expert') {
+                content.resources.expertTalks[index] = videoId;
+            }
+
+            // Update database
+            await db.update(Chapters)
+                .set({ 
+                    content,
+                    videoId: content.resources.recommendedVideos[0] || ''
+                })
+                .where(and(
+                    eq(Chapters.chapterId, selectedChapter.chapterId),
+                    eq(Chapters.courseId, params.courseId)
+                ));
+
+            setChapterContent(content);
+            alert('Video updated successfully!');
+        }
+    } catch (error) {
+        console.error('Error updating video:', error);
+        alert('Error updating video');
+    }
+};
+
+const updateAllVideos = async () => {
+    if (!selectedChapter) return;
+
+    try {
+        const result = await db.select().from(Chapters)
+            .where(and(
+                eq(Chapters.chapterId, selectedChapter.chapterId),
+                eq(Chapters.courseId, params.courseId)
+            ));
+
+        if (result?.[0]) {
+            const content = typeof result[0].content === 'string' 
+                ? JSON.parse(result[0].content) 
+                : result[0].content;
+
+            // Update all videos
+            content.resources.recommendedVideos = videoUrls.recommended
+                .map(url => extractVideoId(url))
+                .filter(Boolean);
+            content.resources.alternativeVideos = videoUrls.alternative
+                .map(url => extractVideoId(url))
+                .filter(Boolean);
+            content.resources.expertTalks = videoUrls.expert
+                .map(url => extractVideoId(url))
+                .filter(Boolean);
+
+            // Update database
+            await db.update(Chapters)
+                .set({ 
+                    content,
+                    videoId: content.resources.recommendedVideos[0] || ''
+                })
+                .where(and(
+                    eq(Chapters.chapterId, selectedChapter.chapterId),
+                    eq(Chapters.courseId, params.courseId)
+                ));
+
+            setChapterContent(content);
+            alert('All videos updated successfully!');
+        }
+    } catch (error) {
+        console.error('Error updating videos:', error);
+        alert('Error updating videos');
+    }
+};
+
+// Add this useEffect to load existing videos when chapter changes
+useEffect(() => {
+    if (chapterContent?.resources) {
+        setVideoUrls({
+            recommended: [
+                ...chapterContent.resources.recommendedVideos,
+                ...Array(3 - chapterContent.resources.recommendedVideos.length).fill('')
+            ],
+            alternative: [
+                ...chapterContent.resources.alternativeVideos,
+                ...Array(3 - chapterContent.resources.alternativeVideos.length).fill('')
+            ],
+            expert: [
+                ...chapterContent.resources.expertTalks,
+                ...Array(2 - chapterContent.resources.expertTalks.length).fill('')
+            ]
+        });
+    }
+}, [chapterContent]);
+
     return (
         <div className="min-h-screen bg-gray-50">
-            {/* Dev Tools Button */}
-            <button
-                onClick={() => setDevMode(!devMode)}
-                className="fixed bottom-4 right-4 z-50 bg-black text-green-500 px-4 py-2 rounded-md 
-                          hover:bg-gray-900 transition-all flex items-center gap-2 border border-green-500
-                          font-mono text-sm shadow-[0_0_10px_rgba(34,197,94,0.3)]"
-            >
-                <span className="text-lg animate-pulse">⚡</span>
-                {devMode ? '>> EXIT_DEV_MODE' : '>> ENTER_DEV_MODE'}
-            </button>
+         {/* Dev Tools Button */}
+<button
+    onClick={() => setDevMode(!devMode)}
+    className="fixed bottom-4 right-4 z-50 bg-black text-green-500 px-4 py-2 rounded-md 
+              hover:bg-gray-900 transition-all flex items-center gap-2 border border-green-500
+              font-mono text-sm shadow-[0_0_10px_rgba(34,197,94,0.3)]"
+>
+    <span className="text-lg animate-pulse">⚡</span>
+    {devMode ? '>> EXIT_DEV_MODE' : '>> ENTER_DEV_MODE'}
+</button>
 
-            {/* Dev Tools Panel */}
-            {devMode && (
-                <div className="fixed right-4 bottom-16 w-[600px] max-h-[80vh] bg-black border border-green-500 
-                               text-green-500 rounded-lg shadow-[0_0_20px_rgba(34,197,94,0.2)] z-50 overflow-hidden
-                               font-mono"
+{/* Dev Tools Panel */}
+{devMode && (
+    <div className="fixed right-4 bottom-16 w-[800px] max-h-[80vh] bg-black border border-green-500 
+                   text-green-500 rounded-lg shadow-[0_0_20px_rgba(34,197,94,0.2)] z-50 overflow-hidden
+                   font-mono"
+    >
+        {/* Dev Tools Header */}
+        <div className="p-4 border-b border-green-500/30 flex justify-between items-center bg-black">
+            <div className="flex items-center gap-4">
+                <div className="animate-pulse">$</div>
+                <h3 className="font-bold tracking-wider">DEV_CONSOLE</h3>
+            </div>
+            <div className="flex gap-2 text-xs">
+                <div className="px-2 py-1 bg-green-500/10 rounded">
+                    STATUS: {regenerating ? 'BUSY' : 'READY'}
+                </div>
+                <div className="px-2 py-1 bg-green-500/10 rounded">
+                    CHAPTER: {selectedChapter?.chapterId ?? 'NULL'}
+                </div>
+            </div>
+        </div>
+
+        {/* Dev Tools Tabs */}
+        <div className="flex border-b border-green-500/30">
+            {['raw', 'controls', 'status'].map((tab) => (
+                <button
+                    key={tab}
+                    onClick={() => setDevToolsTab(tab)}
+                    className={`px-6 py-2 text-sm border-r border-green-500/30 ${
+                        devToolsTab === tab 
+                            ? 'bg-green-500/10 text-green-400' 
+                            : 'text-green-600 hover:text-green-400 hover:bg-green-500/5'
+                    }`}
                 >
-                    {/* Dev Tools Header */}
-                    <div className="p-4 border-b border-green-500/30 flex justify-between items-center bg-black">
-                        <div className="flex items-center gap-4">
-                            <div className="animate-pulse">$</div>
-                            <h3 className="font-bold tracking-wider">DEV_CONSOLE</h3>
-                        </div>
-                        <div className="flex gap-2 text-xs">
-                            <div className="px-2 py-1 bg-green-500/10 rounded">
-                                STATUS: {regenerating ? 'BUSY' : 'READY'}
-                            </div>
-                            <div className="px-2 py-1 bg-green-500/10 rounded">
-                                CHAPTER: {selectedChapter?.chapterId ?? 'NULL'}
-                            </div>
-                        </div>
-                    </div>
+                    {tab.toUpperCase()}
+                </button>
+            ))}
+        </div>
 
-                    {/* Dev Tools Tabs */}
-                    <div className="flex border-b border-green-500/30">
-                        {['raw', 'controls', 'status'].map((tab) => (
+        {/* Dev Tools Content */}
+        <div className="p-4 overflow-auto max-h-[calc(80vh-8rem)] dev-panel">
+            {/* RAW Tab */}
+            {devToolsTab === 'raw' && (
+                <div className="space-y-4">
+                    <div className="flex justify-between items-center">
+                        <span className="text-xs text-green-600">// Raw AI Response Data</span>
+                        <div className="flex gap-2">
                             <button
-                                key={tab}
-                                onClick={() => setDevToolsTab(tab)}
-                                className={`px-4 py-2 text-sm ${
-                                    devToolsTab === tab 
-                                        ? 'bg-green-500/10 text-green-400' 
-                                        : 'text-green-600 hover:text-green-400'
-                                }`}
+                                onClick={() => rawAIResponse && navigator.clipboard.writeText(rawAIResponse)}
+                                className="px-2 py-1 bg-green-500/10 rounded text-xs hover:bg-green-500/20"
+                                disabled={!rawAIResponse}
                             >
-                                {tab.toUpperCase()}
+                                COPY_DATA
                             </button>
-                        ))}
+                            <button
+                                onClick={() => setRawAIResponse(null)}
+                                className="px-2 py-1 bg-red-500/10 text-red-400 rounded text-xs hover:bg-red-500/20"
+                                disabled={!rawAIResponse}
+                            >
+                                CLEAR_DATA
+                            </button>
+                        </div>
                     </div>
-
-                    {/* Dev Tools Content */}
-                    <div className="p-4 overflow-auto max-h-[calc(80vh-8rem)] dev-panel">
-                        {devToolsTab === 'raw' && (
-                            <div className="space-y-4">
-                                <div className="flex justify-between items-center">
-                                    <span className="text-xs text-green-600">// Raw AI Response Data</span>
-                                    <div className="flex gap-2">
-                                        <button
-                                            onClick={() => rawAIResponse && navigator.clipboard.writeText(rawAIResponse)}
-                                            className="px-2 py-1 bg-green-500/10 rounded text-xs hover:bg-green-500/20"
-                                            disabled={!rawAIResponse}
-                                        >
-                                            COPY_DATA
-                                        </button>
-                                        <button
-                                            onClick={() => setRawAIResponse(null)}
-                                            className="px-2 py-1 bg-red-500/10 text-red-400 rounded text-xs hover:bg-red-500/20"
-                                            disabled={!rawAIResponse}
-                                        >
-                                            CLEAR_DATA
-                                        </button>
-                                    </div>
-                                </div>
-                                <div className="bg-black/50 p-4 rounded border border-green-500/30">
-                                    {rawAIResponse ? (
-                                        <pre className="text-xs whitespace-pre-wrap break-words text-green-400">
-                                            {typeof rawAIResponse === 'string' 
-                                                ? rawAIResponse 
-                                                : JSON.stringify(rawAIResponse, null, 2)}
-                                        </pre>
-                                    ) : (
-                                        <div className="text-green-600 text-center py-4">
-                                            // No data available. Generate or select content to view raw data.
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        )}
-
-                        {devToolsTab === 'controls' && (
-                            <div className="space-y-4">
-                                <div className="text-xs text-green-600 mb-4">
-                                    // Generation Controls
-                                </div>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <button
-                                        onClick={regenerateCurrentChapter}
-                                        disabled={regenerating || !selectedChapter}
-                                        className="p-4 bg-green-500/10 rounded border border-green-500/30 
-                                                 hover:bg-green-500/20 disabled:opacity-50 disabled:cursor-not-allowed
-                                                 text-left space-y-2"
-                                    >
-                                        <div className="text-sm font-bold">REGENERATE_CURRENT</div>
-                                        <div className="text-xs text-green-600">
-                                            // Regenerate selected chapter content
-                                        </div>
-                                    </button>
-                                    <button
-                                        onClick={regenerateAllChapters}
-                                        disabled={regenerating}
-                                        className="p-4 bg-green-500/10 rounded border border-green-500/30 
-                                                 hover:bg-green-500/20 disabled:opacity-50 disabled:cursor-not-allowed
-                                                 text-left space-y-2"
-                                    >
-                                        <div className="text-sm font-bold">REGENERATE_ALL</div>
-                                        <div className="text-xs text-green-600">
-                                            // Regenerate all chapters
-                                        </div>
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-
-                        {devToolsTab === 'status' && (
-                            <div className="space-y-4">
-                                <div className="text-xs text-green-600 mb-4">
-                                    // System Status
-                                </div>
-                                <div className="space-y-4">
-                                    <div className="bg-black/50 p-4 rounded border border-green-500/30">
-                                        <div className="grid grid-cols-2 gap-2 text-xs">
-                                            <div>Selected Chapter:</div>
-                                            <div>{selectedChapter?.name || 'NULL'}</div>
-                                            <div>Generation Step:</div>
-                                            <div>{generationStep || 'IDLE'}</div>
-                                            <div>System Status:</div>
-                                            <div>{loading ? 'LOADING' : contentLoading ? 'GENERATING' : 'READY'}</div>
-                                        </div>
-                                    </div>
-                                    {generationStatus && (
-                                        <div className="bg-black/50 p-4 rounded border border-green-500/30">
-                                            <div className="text-sm mb-2">Latest Status:</div>
-                                            <div className="text-xs text-green-400">{generationStatus.message}</div>
-                                            {generationStatus.error && (
-                                                <div className="text-xs text-red-400 mt-2">
-                                                    ERROR: {generationStatus.error}
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
+                    <div className="bg-black/50 p-4 rounded border border-green-500/30">
+                        {rawAIResponse ? (
+                            <pre className="text-xs whitespace-pre-wrap break-words text-green-400">
+                                {typeof rawAIResponse === 'string' 
+                                    ? rawAIResponse 
+                                    : JSON.stringify(rawAIResponse, null, 2)}
+                            </pre>
+                        ) : (
+                            <div className="text-green-600 text-center py-4">
+                                // No data available. Generate or select content to view raw data.
                             </div>
                         )}
                     </div>
                 </div>
             )}
 
+            {/* CONTROLS Tab */}
+            {devToolsTab === 'controls' && (
+                <div className="space-y-6">
+                    {/* Generation Controls */}
+                    <div>
+                        <div className="text-xs text-green-600 mb-4">// Generation Controls</div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <button
+                                onClick={regenerateCurrentChapter}
+                                disabled={regenerating || !selectedChapter}
+                                className="p-4 bg-green-500/10 rounded border border-green-500/30 
+                                         hover:bg-green-500/20 disabled:opacity-50 disabled:cursor-not-allowed
+                                         text-left space-y-2"
+                            >
+                                <div className="text-sm font-bold">REGENERATE_CURRENT</div>
+                                <div className="text-xs text-green-600">
+                                    // Regenerate selected chapter content
+                                </div>
+                            </button>
+                            <button
+                                onClick={regenerateAllChapters}
+                                disabled={regenerating}
+                                className="p-4 bg-green-500/10 rounded border border-green-500/30 
+                                         hover:bg-green-500/20 disabled:opacity-50 disabled:cursor-not-allowed
+                                         text-left space-y-2"
+                            >
+                                <div className="text-sm font-bold">REGENERATE_ALL</div>
+                                <div className="text-xs text-green-600">
+                                    // Regenerate all chapters
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Video Management */}
+                    <div>
+                        <div className="text-xs text-green-600 mb-4">// Video Management</div>
+                        <div className="bg-black/50 p-4 rounded border border-green-500/30 space-y-6">
+                            {/* Recommended Videos */}
+                            <div>
+                                <div className="text-xs text-green-600 mb-2">$ recommended_videos</div>
+                                <div className="space-y-2">
+                                    {[0, 1, 2].map((index) => (
+                                        <div key={`rec-${index}`} className="flex gap-2">
+                                            <input
+                                                type="text"
+                                                placeholder="https://youtube.com/watch?v=..."
+                                                className="flex-1 bg-black/30 border border-green-500/30 rounded px-2 py-1 
+                                                         text-xs text-green-400 placeholder-green-800"
+                                                value={videoUrls?.recommended?.[index] || ''}
+                                                onChange={(e) => handleVideoUrlChange('recommended', index, e.target.value)}
+                                            />
+                                            <button
+                                                onClick={() => updateVideo('recommended', index)}
+                                                className="px-3 py-1 bg-green-500/10 text-xs rounded hover:bg-green-500/20"
+                                            >
+                                                UPDATE
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Alternative Videos */}
+                            <div>
+                                <div className="text-xs text-green-600 mb-2">$ alternative_videos</div>
+                                <div className="space-y-2">
+                                    {[0, 1, 2].map((index) => (
+                                        <div key={`alt-${index}`} className="flex gap-2">
+                                            <input
+                                                type="text"
+                                                placeholder="https://youtube.com/watch?v=..."
+                                                className="flex-1 bg-black/30 border border-green-500/30 rounded px-2 py-1 
+                                                         text-xs text-green-400 placeholder-green-800"
+                                                value={videoUrls?.alternative?.[index] || ''}
+                                                onChange={(e) => handleVideoUrlChange('alternative', index, e.target.value)}
+                                            />
+                                            <button
+                                                onClick={() => updateVideo('alternative', index)}
+                                                className="px-3 py-1 bg-green-500/10 text-xs rounded hover:bg-green-500/20"
+                                            >
+                                                UPDATE
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Expert Talks */}
+                            <div>
+                                <div className="text-xs text-green-600 mb-2">$ expert_talks</div>
+                                <div className="space-y-2">
+                                    {[0, 1].map((index) => (
+                                        <div key={`exp-${index}`} className="flex gap-2">
+                                            <input
+                                                type="text"
+                                                placeholder="https://youtube.com/watch?v=..."
+                                                className="flex-1 bg-black/30 border border-green-500/30 rounded px-2 py-1 
+                                                         text-xs text-green-400 placeholder-green-800"
+                                                value={videoUrls?.expert?.[index] || ''}
+                                                onChange={(e) => handleVideoUrlChange('expert', index, e.target.value)}
+                                            />
+                                            <button
+                                                onClick={() => updateVideo('expert', index)}
+                                                className="px-3 py-1 bg-green-500/10 text-xs rounded hover:bg-green-500/20"
+                                            >
+                                                UPDATE
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Update All Button */}
+                            <div className="pt-4 border-t border-green-500/30">
+                                <button
+                                    onClick={updateAllVideos}
+                                    disabled={!selectedChapter}
+                                    className="w-full px-4 py-2 bg-green-500/20 rounded hover:bg-green-500/30 
+                                             text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    UPDATE_ALL_VIDEOS
+                                </button>
+                                <div className="text-xs text-green-600 mt-2 text-center">
+                                    // Video IDs will be extracted from URLs automatically
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* STATUS Tab */}
+            {devToolsTab === 'status' && (
+                <div className="space-y-4">
+                    <div className="text-xs text-green-600 mb-4">// System Status</div>
+                    <div className="space-y-4">
+                        <div className="bg-black/50 p-4 rounded border border-green-500/30">
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div>Selected Chapter:</div>
+                                <div>{selectedChapter?.name || 'NULL'}</div>
+                                <div>Generation Step:</div>
+                                <div>{generationStep || 'IDLE'}</div>
+                                <div>System Status:</div>
+                                <div>{loading ? 'LOADING' : contentLoading ? 'GENERATING' : 'READY'}</div>
+                            </div>
+                        </div>
+                        {generationStatus && (
+                            <div className="bg-black/50 p-4 rounded border border-green-500/30">
+                                <div className="text-sm mb-2">Latest Status:</div>
+                                <div className="text-xs text-green-400">{generationStatus.message}</div>
+                                {generationStatus.error && (
+                                    <div className="text-xs text-red-400 mt-2">
+                                        ERROR: {generationStatus.error}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    </div>
+)}
             {/* Main Content */}
             <div className='fixed md:w-72 hidden md:block h-screen border-r shadow-sm'>
-                <div className='bg-primary p-4'>
-                    <h2 className='font-medium text-lg text-white'>
-                        {course?.courseOutput?.course?.name || 'Loading course...'}
-                    </h2>
-                </div>
+                
+<div className='bg-primary p-4'>
+
+<div className='flex items-center gap-4'>
+
+    <button 
+
+        onClick={() => router.push('/dashboard')}
+
+        className='flex items-center gap-2 text-white hover:bg-white/10 p-2 rounded-lg transition-all'
+
+    >
+
+        <HiArrowLeft className="w-5 h-5" />
+
+        <span className='text-sm'>Back to Dashboard</span>
+
+    </button>
+
+</div>
+
+
+
+<h2 className='font-medium text-lg text-white mt-2'>
+
+    {course?.courseOutput?.course?.name || 'Loading course...'}
+
+</h2>
+
+</div>
 
                 <div className="h-[calc(100vh-80px)] overflow-y-auto">
                     {loading ? (

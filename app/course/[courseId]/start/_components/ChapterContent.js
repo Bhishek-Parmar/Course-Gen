@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import YouTube from 'react-youtube'
 import ReactMarkdown from 'react-markdown';
 import { HiLightBulb, HiCode, HiPuzzle, HiAcademicCap, HiPlay } from "react-icons/hi";
+import { useEffect } from 'react';
 
 const opts = {
     height: '390',
@@ -15,7 +16,74 @@ function ChapterContent({chapter, content}) {
     const [videoLoading, setVideoLoading] = useState(false);
     const [activeExercise, setActiveExercise] = useState(null);
     const [showAnswer, setShowAnswer] = useState(false);
-    const [selectedVideo, setSelectedVideo] = useState(null);
+       const [selectedVideo, setSelectedVideo] = useState({
+        id: content?.resources?.recommendedVideos?.[0] || null,
+        platform: "youtube",
+        url: "",
+    });
+
+    const [customVideoUrl, setCustomVideoUrl] = useState("");
+    const [videoPlatform, setVideoPlatform] = useState("youtube");
+
+    useEffect(() => {
+        if (content?.resources?.recommendedVideos?.length > 0) {
+            const initialVideoId = content.resources.recommendedVideos[0];
+            handleVideoSelection(initialVideoId, "youtube");
+        } else {
+            setSelectedVideo({ id: null, platform: "youtube", url: "" });
+        }
+    }, [content]);
+
+    const handleVideoSelection = (videoId, platform) => {
+        setSelectedVideo({ id: videoId, platform, url: "" });
+        setCustomVideoUrl("");
+        setVideoPlatform(platform);
+    };
+
+    const handleCustomVideoUrlChange = (e) => {
+        const url = e.target.value;
+        setCustomVideoUrl(url);
+
+        if (url.includes("youtube.com") || url.includes("youtu.be")) {
+            const videoId = url.split("v=")[1]?.split("&")[0] || url.split("/").pop();
+            setSelectedVideo({ id: videoId, platform: "youtube", url });
+            setVideoPlatform("youtube");
+        } else {
+            setSelectedVideo({ id: null, platform: "custom", url });
+            setVideoPlatform("custom");
+        }
+    };
+
+    const renderVideoPlayer = () => {
+        if (!selectedVideo.id && !selectedVideo.url) return <p>No video available.</p>;
+
+        if (selectedVideo.platform === "youtube") {
+            return (
+                <YouTube
+                    videoId={selectedVideo.id}
+                    opts={opts}
+                    className="w-full"
+                    onReady={() => setVideoLoading(false)}
+                />
+            );
+        } else if (selectedVideo.platform === "custom") {
+            return (
+                <iframe
+                    title="Custom Video"
+                    width="100%"
+                    height="390"
+                    src={selectedVideo.url}
+                    frameBorder="0"
+                    allow="autoplay; fullscreen"
+                    allowFullScreen
+                    className="w-full"
+                />
+            );
+        }
+
+        return null;
+    };
+
 
     // Ensure content is properly structured
     const contentSections = Array.isArray(content?.content) 
@@ -143,23 +211,14 @@ function ChapterContent({chapter, content}) {
                 ))}
             </div>
 
-            {/* Sidebar Content */}
-            <div className="md:w-1/3 space-y-6">
+         {/* Sidebar Content */}
+         <div className="md:w-1/3 space-y-6">
                 {/* Video Section */}
                 <div className="bg-white rounded-xl shadow-sm p-6 border sticky top-6">
                     <h3 className="text-xl font-bold mb-4">📺 Learning Resources</h3>
-                    
-                    {/* Main Video */}
-                    {content?.resources?.recommendedVideos?.[0] && (
-                        <div className="mb-6">
-                            <YouTube
-                                videoId={selectedVideo || content.resources.recommendedVideos[0]}
-                                opts={opts}
-                                className="w-full"
-                                onReady={() => setVideoLoading(false)}
-                            />
-                        </div>
-                    )}
+
+                    {/* Main Video Player */}
+                    <div className="mb-6">{renderVideoPlayer()}</div>
 
                     {/* Alternative Videos */}
                     {content?.resources?.alternativeVideos?.length > 0 && (
@@ -169,7 +228,7 @@ function ChapterContent({chapter, content}) {
                                 {content.resources.alternativeVideos.map((videoId, idx) => (
                                     <button
                                         key={idx}
-                                        onClick={() => setSelectedVideo(videoId)}
+                                        onClick={() => handleVideoSelection(videoId)}
                                         className="w-full text-left p-2 rounded hover:bg-gray-100 flex items-center gap-2"
                                     >
                                         <HiPlay className="text-primary" />
@@ -188,7 +247,7 @@ function ChapterContent({chapter, content}) {
                                 {content.resources.expertTalks.map((videoId, idx) => (
                                     <button
                                         key={idx}
-                                        onClick={() => setSelectedVideo(videoId)}
+                                        onClick={() => handleVideoSelection(videoId)}
                                         className="w-full text-left p-2 rounded hover:bg-gray-100 flex items-center gap-2"
                                     >
                                         <HiLightBulb className="text-primary" />
@@ -198,6 +257,7 @@ function ChapterContent({chapter, content}) {
                             </div>
                         </div>
                     )}
+        
                 </div>
 
                 {/* Additional Resources */}
